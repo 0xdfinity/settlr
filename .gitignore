@@ -1,0 +1,15 @@
+.opencode/runs/
+node_modules/
+.env
+.env.*
+!.env.example
+!**/.env.example
+dist/
+build/
+.next/
+.vercel/
+*.log
+*.tsbuildinfo
+*.err
+.pglite-data*
+.playwright-mcp/

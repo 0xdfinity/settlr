@@ -1,0 +1,12 @@
+.git
+.github
+node_modules
+.next
+dist
+.env
+.env.*
+!.env.example
+.pglite-data*
+.playwright-mcp
+.opencode
+*.log

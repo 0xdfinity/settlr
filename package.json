@@ -1,0 +1,21 @@
+{
+  "name": "settlr",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The trust layer for agent payments: PayPal-held escrow for AI agents, proven by delivery.",
+  "license": "MIT",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run -w apps/api dev",
+    "dev:web": "npm run -w apps/web dev",
+    "dev:mcp": "npm run -w apps/mcp dev",
+    "build": "npm run -w apps/api build && npm run -w apps/web build && npm run -w apps/mcp build",
+    "migrate": "npm run -w apps/api migrate",
+    "verify": "npm run -w apps/api verify && npm run -w apps/web typecheck"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

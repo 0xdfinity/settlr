@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run -w apps/api build
+      - run: npm run -w apps/mcp build
+      - run: npm run -w apps/web typecheck
+      - run: npm run -w apps/web build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8787
+          NEXT_PUBLIC_PAYPAL_CLIENT_ID: ci_placeholder
+          NEXT_PUBLIC_PAYPAL_ENV: sandbox
+      - run: npm run -w apps/api verify

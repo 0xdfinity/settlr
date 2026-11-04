@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-settlr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settlr_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-settlr}
+    volumes:
+      - settlr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api-runner
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      DATABASE_URL: postgres://${POSTGRES_USER:-settlr}:${POSTGRES_PASSWORD:-settlr_dev_password}@db:5432/${POSTGRES_DB:-settlr}
+      WEB_ORIGINS: ${WEB_ORIGINS:-http://localhost:3000}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8787}
+      WEB_RETURN_URL: ${WEB_RETURN_URL:-http://localhost:3000/deals/return}
+      WEB_CANCEL_URL: ${WEB_CANCEL_URL:-http://localhost:3000/deals/cancel}
+      PAYPAL_ENV: ${PAYPAL_ENV:-sandbox}
+      PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID}
+      PAYPAL_CLIENT_SECRET: ${PAYPAL_CLIENT_SECRET}
+      # Optional: define PAYPAL_WEBHOOK_ID in the environment and add it here before enabling webhooks.
+      AUTH_SECRET: ${AUTH_SECRET}
+      VERIFIER_HMAC_SECRET: ${VERIFIER_HMAC_SECRET}
+      CHANNEL3_API_KEY: ${CHANNEL3_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-openai/gpt-oss-120b}
+    ports:
+      - "${API_PORT:-8787}:8787"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web-runner
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8787}
+        NEXT_PUBLIC_PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID}
+        NEXT_PUBLIC_PAYPAL_ENV: ${PAYPAL_ENV:-sandbox}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+volumes:
+  settlr_pgdata:

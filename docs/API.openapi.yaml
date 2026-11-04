@@ -1,0 +1,442 @@
+openapi: 3.1.0
+info:
+  title: Settlr API
+  version: 1.0.0
+  description: |
+    Trust layer for agent payments. Holds PayPal funds (`intent=AUTHORIZE`) until
+    proof of delivery verifies; then captures or voids. All mutating endpoints are
+    idempotent via `Idempotency-Key` header.
+servers:
+  - url: http://localhost:8787
+    description: Default local self-host
+  - url: https://settlr-api.example.com
+    description: Example of an operator-provided deployment (not a hosted service)
+security:
+  - sessionCookie: []
+  - apiKey: []
+paths:
+  /v1/auth/signup:
+    post:
+      summary: Create account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignupRequest" }
+      responses:
+        "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/User" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: "Email already registered" }
+  /v1/auth/signin:
+    post:
+      summary: Sign in (sets httpOnly session cookie)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SigninRequest" }
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/User" } } } }
+        "401": { description: "Invalid credentials" }
+  /v1/auth/signout:
+    post:
+      summary: Sign out
+      responses:
+        "204": { description: "Signed out" }
+  /v1/auth/me:
+    get:
+      summary: Current session user
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/User" } } } }
+        "401": { description: "Unauthorized" }
+  /v1/api-keys:
+    post:
+      summary: Create an MCP API key (raw key shown once)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiKeyCreate" }
+      responses:
+        "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/ApiKeyCreated" } } } }
+    get:
+      summary: List API keys (no raw values)
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { type: "array", items: { $ref: "#/components/schemas/ApiKeySummary" } } } } }
+  /v1/api-keys/{keyId}:
+    delete:
+      summary: Revoke API key
+      parameters: [ { $ref: "#/components/parameters/KeyId" } ]
+      responses:
+        "204": { description: "Revoked" }
+  /v1/deals:
+    post:
+      summary: Create a deal (returns PayPal approval link)
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DealCreate" }
+      responses:
+        "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/Deal" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    get:
+      summary: List my deals (filter/paginate)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, authorized, capture_pending, captured, voided, expired, failed, review_required] } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: order, in: query, schema: { type: string, enum: [created_at_desc, created_at_asc, amount_desc], default: created_at_desc } }
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/DealList" } } } }
+  /v1/deals/{dealId}:
+    get:
+      summary: Get deal detail (include audit trail)
+      parameters: [ { $ref: "#/components/parameters/DealId" } ]
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/DealDetail" } } } }
+        "404": { description: "Not found" }
+  /v1/deals/by-order/{orderId}:
+    get:
+      summary: Resolve a deal from its PayPal order id (return-page reconciliation)
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/Deal" } } } }
+        "404": { description: "Not found" }
+  /v1/deals/{dealId}/approve-callback:
+    post:
+      summary: Post-approval server sync (idempotent; also webhook-driven)
+      parameters: [ { $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/Deal" } } } }
+  /v1/deals/{dealId}/proof:
+    post:
+      summary: Submit proof; runs verifier; captures or voids
+      parameters: [ { $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProofSubmission" }
+      responses:
+        "200": { description: "Verified", content: { "application/json": { schema: { $ref: "#/components/schemas/ProofResult" } } } }
+        "422": { description: "Proof rejected", content: { "application/json": { schema: { $ref: "#/components/schemas/ProofResult" } } } }
+  /v1/deals/{dealId}/review:
+    post:
+      summary: Human decision on a review_required deal (captures or voids the hold)
+      description: |
+        Only `review_required` deals can be resolved. The decision and its reason are
+        written to the audit trail before any PayPal call. A deal that is not in
+        review returns 409.
+      parameters: [ { $ref: "#/components/parameters/DealId" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewRequest" }
+      responses:
+        "200": { description: "Settled", content: { "application/json": { schema: { $ref: "#/components/schemas/Deal" } } } }
+        "404": { description: "Not found" }
+        "409": { description: "Deal is not in review" }
+        "502": { description: "PayPal settlement failed" }
+  /v1/deals/{dealId}/force-settle:
+    post:
+      summary: Admin override â€” force capture or void with reason
+      parameters: [ { $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ action, reason ]
+              properties:
+                action: { type: string, enum: [capture, void] }
+                reason: { type: string, minLength: 10 }
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/Deal" } } } }
+  /v1/catalog/search:
+    get:
+      summary: Channel3 product search (agent shopping)
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 3 } }
+        - { name: maxPrice, in: query, schema: { type: number, exclusiveMinimum: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 20, default: 5 } }
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { type: array, items: { $ref: "#/components/schemas/CatalogOffer" } } } } }
+  /v1/ai/draft:
+    post:
+      summary: Draft an editable contract from plain-language intent
+      description: |
+        Searches Channel3 for matching offers under the budget, then asks the model
+        for a contract. Catalog data is passed through unchanged; nothing is invented.
+        Returns 503 when the planner is unavailable â€” the operator falls back to the
+        contract form.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DraftRequest" }
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/DraftResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { description: "Planner unavailable" }
+  /v1/ai/explain/{dealId}:
+    post:
+      summary: Explain a settlement decision for one deal
+      parameters: [ { $ref: "#/components/parameters/DealId" } ]
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/Explanation" } } } }
+        "404": { description: "Not found" }
+  /v1/analytics:
+    get:
+      summary: Settlement volume, outcomes, latency, and merchants (last 90 days)
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/Analytics" } } } }
+  /v1/metrics:
+    get:
+      summary: Headline counters for the deals console
+      responses:
+        "200": { description: "OK", content: { "application/json": { schema: { $ref: "#/components/schemas/Metrics" } } } }
+  /v1/webhooks/paypal:
+    post:
+      summary: PayPal webhook receiver (signature-verified)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: "Accepted" }
+        "400": { description: "Invalid signature" }
+  /healthz:
+    get:
+      summary: Liveness
+      security: []
+      responses: { "200": { description: "OK" } }
+components:
+  securitySchemes:
+    sessionCookie: { type: apiKey, in: cookie, name: settlr_session }
+    apiKey: { type: http, scheme: bearer, bearerFormat: settlr_key }
+  parameters:
+    DealId: { name: dealId, in: path, required: true, schema: { type: string, format: uuid } }
+    KeyId: { name: keyId, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 128 } }
+  responses:
+    BadRequest: { description: "Validation failed", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } }
+  schemas:
+    Error:
+      type: object
+      required: [ code, message ]
+      properties: { code: { type: string }, message: { type: string }, details: { type: object } }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+    SignupRequest:
+      type: object
+      required: [ email, password, name ]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 10, maxLength: 200 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+    SigninRequest:
+      type: object
+      required: [ email, password ]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+    ApiKeyCreate:
+      type: object
+      required: [ name ]
+      properties:
+        name: { type: string, minLength: 3, maxLength: 80 }
+        scopes: { type: array, items: { type: string, enum: ["deal:create", "proof:submit", "deal:read"] }, default: ["deal:create", "proof:submit", "deal:read"] }
+    ApiKeyCreated:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        key: { type: string, description: "Raw key, shown once (prefix settlr_live_)" }
+    ApiKeySummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        prefix: { type: string }
+        scopes: { type: array, items: { type: string } }
+        lastUsedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    DealCreate:
+      type: object
+      required: [ amountUsd, description ]
+      properties:
+        amountUsd: { type: number, exclusiveMinimum: 0, maximum: 10000, description: "Per-deal amount cap" }
+        currency: { type: string, default: USD, enum: [USD] }
+        description: { type: string, minLength: 3, maxLength: 500 }
+        merchant: { type: string, maxLength: 200, nullable: true }
+        merchantUrl: { type: string, format: uri, nullable: true }
+        proofSpec:
+          type: object
+          description: "What must be true to release funds"
+          properties:
+            url: { type: string, format: uri, nullable: true }
+            expectStatus: { type: integer, default: 200 }
+            expectBodyContains: { type: string, maxLength: 200, nullable: true }
+            llmPrompt: { type: string, maxLength: 500, nullable: true }
+        category: { type: string, maxLength: 80, nullable: true }
+        expiresMinutes: { type: integer, minimum: 5, maximum: 1440, default: 60 }
+    Deal:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        amountUsd: { type: number }
+        currency: { type: string }
+        status: { type: string, enum: [pending, authorized, capture_pending, captured, voided, expired, failed, review_required] }
+        description: { type: string }
+        merchant: { type: string, nullable: true }
+        approveUrl: { type: string, format: uri, nullable: true }
+        authorizationId: { type: string, nullable: true }
+        captureId: { type: string, nullable: true }
+        proofStatus: { type: string, enum: [none, pending, passed, failed] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    DealDetail:
+      allOf:
+        - $ref: "#/components/schemas/Deal"
+        - type: object
+          properties:
+            audit: { type: array, items: { type: object } }
+            proofAttempts: { type: array, items: { type: object } }
+    DealList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Deal" } }
+        total: { type: integer }
+    ProofSubmission:
+      type: object
+      required: [ kind ]
+      properties:
+        kind: { type: string, enum: [http_check, url_screenshot, log] }
+        url: { type: string, format: uri, nullable: true }
+        expectStatus: { type: integer, nullable: true }
+        expectBodyContains: { type: string, maxLength: 200, nullable: true }
+        note: { type: string, maxLength: 1000, nullable: true }
+    ProofResult:
+      type: object
+      properties:
+        passed: { type: boolean }
+        deal: { $ref: "#/components/schemas/Deal" }
+        checks: { type: array, items: { type: object } }
+        reason: { type: string }
+    CatalogOffer:
+      type: object
+      properties:
+        title: { type: string }
+        merchant: { type: string }
+        priceUsd: { type: number }
+        url: { type: string, format: uri }
+        imageUrl: { type: string, format: uri, nullable: true }
+        source: { type: string, default: channel3 }
+    ReviewRequest:
+      type: object
+      required: [ action, reason ]
+      properties:
+        action: { type: string, enum: [capture, void] }
+        reason: { type: string, minLength: 10, maxLength: 500, description: "Stored verbatim in the audit trail" }
+    DraftRequest:
+      type: object
+      required: [ intent, budgetUsd ]
+      properties:
+        intent: { type: string, minLength: 8, maxLength: 1000 }
+        budgetUsd: { type: number, exclusiveMinimum: 0, maximum: 10000 }
+        category: { type: string, maxLength: 80 }
+    Draft:
+      type: object
+      properties:
+        merchant: { type: string }
+        description: { type: string }
+        amountUsd: { type: number, description: "0 when neither intent nor catalog states a price" }
+        category: { type: string, nullable: true }
+        deliveryContract: { type: string }
+        proofUrl: { type: string, format: uri, nullable: true }
+        expectStatus: { type: integer, nullable: true }
+        expectBodyContains: { type: string, nullable: true }
+        offerUrl: { type: string, format: uri, nullable: true }
+        risks: { type: array, items: { type: string } }
+        rationale: { type: string }
+    DraftResponse:
+      type: object
+      properties:
+        draft: { $ref: "#/components/schemas/Draft" }
+        offers: { type: array, items: { $ref: "#/components/schemas/CatalogOffer" } }
+        catalogError: { type: string, nullable: true }
+    Explanation:
+      type: object
+      properties:
+        headline: { type: string }
+        detail: { type: string }
+        next: { type: string }
+    Metrics:
+      type: object
+      properties:
+        lockedUsd: { type: number }
+        lockedCount: { type: integer }
+        capturedToday: { type: integer }
+        voidedToday: { type: integer }
+        settledTotal: { type: integer }
+    Analytics:
+      type: object
+      properties:
+        totals:
+          type: object
+          properties:
+            deals: { type: integer }
+            captured: { type: integer }
+            voided: { type: integer }
+            review: { type: integer }
+            lockedUsd: { type: number }
+            capturedUsd: { type: number }
+        daily:
+          type: array
+          items:
+            type: object
+            properties:
+              day: { type: string, format: date }
+              created: { type: integer }
+              captured: { type: integer }
+              voided: { type: integer }
+              capturedUsd: { type: number }
+        merchants:
+          type: array
+          items:
+            type: object
+            properties:
+              merchant: { type: string }
+              deals: { type: integer }
+              captured: { type: integer }
+              voided: { type: integer }
+              capturedUsd: { type: number }
+              captureRate: { type: number }
+        outcomes:
+          type: array
+          items:
+            type: object
+            properties:
+              status: { type: string }
+              count: { type: integer }
+              amountUsd: { type: number }
+        latency:
+          type: object
+          properties:
+            p50: { type: number, nullable: true }
+            p95: { type: number, nullable: true }
+            samples: { type: integer }
